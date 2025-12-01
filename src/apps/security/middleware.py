@@ -1,8 +1,12 @@
 import uuid
+import json
 from django.utils import timezone
 from django.utils.deprecation import MiddlewareMixin
-from django.core.cache import cache
+from django.conf import settings
 from apps.users.models import UserSession
+import logging
+
+logger = logging.getLogger('security')
 
 
 class SecurityHeadersMiddleware(MiddlewareMixin):
@@ -15,17 +19,17 @@ class SecurityHeadersMiddleware(MiddlewareMixin):
         response['X-XSS-Protection'] = '1; mode=block'
         response['Referrer-Policy'] = 'strict-origin-when-cross-origin'
         
-        # Content Security Policy
-        response['Content-Security-Policy'] = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data: https:; "
-            "font-src 'self' https:; "
-            "connect-src 'self'; "
-            "frame-ancestors 'none'; "
-            "form-action 'self';"
-        )
+        # Content Security Policy (simplificado para desarrollo)
+        if not settings.DEBUG:
+            response['Content-Security-Policy'] = (
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data: https:; "
+                "font-src 'self' https:; "
+                "connect-src 'self'; "
+                "frame-ancestors 'none';"
+            )
         
         return response
 
@@ -58,7 +62,7 @@ class SessionSecurityMiddleware(MiddlewareMixin):
                     
                 except UserSession.DoesNotExist:
                     # Create new session tracking
-                    ip_address = request.META.get('REMOTE_ADDR')
+                    ip_address = request.META.get('REMOTE_ADDR', '0.0.0.0')
                     user_agent = request.META.get('HTTP_USER_AGENT', '')
                     
                     UserSession.objects.create(
@@ -94,18 +98,16 @@ class RequestLoggingMiddleware(MiddlewareMixin):
             path = request.path
             
             # Check if it's a security-related endpoint
-            security_paths = ['/login', '/register', '/password', '/logout']
-            if any(path.startswith(p) for p in security_paths):
-                ip_address = request.META.get('REMOTE_ADDR')
-                user_agent = request.META.get('HTTP_USER_AGENT', '')
+            security_paths = ['/login', '/register', '/password', '/logout', '/auth']
+            if any(p in path for p in security_paths):
+                ip_address = request.META.get('REMOTE_ADDR', '0.0.0.0')
+                user_agent = request.META.get('HTTP_USER_AGENT', '')[:100]
                 
                 # Log to security log
-                import logging
-                logger = logging.getLogger('security')
                 logger.info(
                     f"Security request: {request.method} {path} "
                     f"from IP: {ip_address} "
-                    f"User-Agent: {user_agent[:100]} "
+                    f"User-Agent: {user_agent} "
                     f"Request-ID: {request.request_id}"
                 )
         

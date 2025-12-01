@@ -8,55 +8,78 @@ from django.utils import timezone
 from rest_framework.views import exception_handler
 from rest_framework.response import Response
 from rest_framework import status
+import logging
+
+logger = logging.getLogger('security')
 
 
 def generate_jwt_token(user, expiration_minutes=15):
     """Generate JWT token with RS256 algorithm."""
-    private_key = settings.SIMPLE_JWT['SIGNING_KEY']
-    
-    payload = {
-        'user_id': str(user.id),
-        'email': user.email,
-        'exp': datetime.utcnow() + timedelta(minutes=expiration_minutes),
-        'iat': datetime.utcnow(),
-        'token_type': 'access',
-        'jti': hashlib.sha256(
-            f"{user.id}{datetime.utcnow().timestamp()}".encode()
-        ).hexdigest()
-    }
-    
-    token = jwt.encode(payload, private_key, algorithm='RS256')
-    return token
+    try:
+        private_key = settings.SIMPLE_JWT.get('SIGNING_KEY', settings.SECRET_KEY)
+        
+        payload = {
+            'user_id': str(user.id),
+            'email': user.email,
+            'exp': datetime.utcnow() + timedelta(minutes=expiration_minutes),
+            'iat': datetime.utcnow(),
+            'token_type': 'access',
+            'jti': hashlib.sha256(
+                f"{user.id}{datetime.utcnow().timestamp()}".encode()
+            ).hexdigest()
+        }
+        
+        algorithm = settings.SIMPLE_JWT.get('ALGORITHM', 'HS256')
+        token = jwt.encode(payload, private_key, algorithm=algorithm)
+        return token
+    except Exception as e:
+        logger.error(f"Error generating JWT token: {str(e)}")
+        return None
 
 
 def verify_jwt_token(token):
-    """Verify JWT token with RS256 algorithm."""
-    public_key = settings.SIMPLE_JWT['VERIFYING_KEY']
-    
+    """Verify JWT token."""
     try:
+        public_key = settings.SIMPLE_JWT.get('VERIFYING_KEY', settings.SECRET_KEY)
+        algorithm = settings.SIMPLE_JWT.get('ALGORITHM', 'HS256')
+        
         payload = jwt.decode(
             token,
             public_key,
-            algorithms=['RS256'],
+            algorithms=[algorithm],
             options={'verify_exp': True}
         )
         return payload
     except jwt.ExpiredSignatureError:
+        logger.warning("JWT token expired")
         return None
-    except jwt.InvalidTokenError:
+    except jwt.InvalidTokenError as e:
+        logger.warning(f"Invalid JWT token: {str(e)}")
+        return None
+    except Exception as e:
+        logger.error(f"Error verifying JWT token: {str(e)}")
         return None
 
 
 def blacklist_token(token, expiration_hours=24):
     """Blacklist a token in Redis."""
-    cache_key = f"blacklisted_token:{token}"
-    cache.set(cache_key, True, timeout=expiration_hours * 3600)
+    try:
+        cache_key = f"blacklisted_token:{token}"
+        cache.set(cache_key, True, timeout=expiration_hours * 3600)
+        return True
+    except Exception as e:
+        logger.error(f"Error blacklisting token: {str(e)}")
+        return False
 
 
 def is_token_blacklisted(token):
     """Check if token is blacklisted in Redis."""
-    cache_key = f"blacklisted_token:{token}"
-    return cache.get(cache_key) is not None
+    try:
+        cache_key = f"blacklisted_token:{token}"
+        return cache.get(cache_key) is not None
+    except Exception as e:
+        logger.error(f"Error checking token blacklist: {str(e)}")
+        return False
 
 
 def generate_device_fingerprint(request):
@@ -80,10 +103,13 @@ def custom_exception_handler(exc, context):
         # Remove sensitive information from errors
         if 'detail' in response.data and isinstance(response.data['detail'], str):
             # Generic error message for security
-            if 'password' in response.data['detail'].lower():
+            error_detail = response.data['detail'].lower()
+            if 'password' in error_detail or 'credentials' in error_detail:
                 response.data['detail'] = 'Authentication failed'
-            elif 'token' in response.data['detail'].lower():
+            elif 'token' in error_detail or 'jwt' in error_detail:
                 response.data['detail'] = 'Invalid token'
+            elif 'permission' in error_detail or 'forbidden' in error_detail:
+                response.data['detail'] = 'Access denied'
         
         # Add security headers
         response['X-Content-Type-Options'] = 'nosniff'
@@ -94,23 +120,27 @@ def custom_exception_handler(exc, context):
 
 def check_rate_limit(key, limit, period):
     """Check and increment rate limit counter."""
-    cache_key = f"rate_limit:{key}"
-    current = cache.get(cache_key, 0)
-    
-    if current >= limit:
-        return False
-    
-    cache.set(cache_key, current + 1, timeout=period)
-    return True
+    try:
+        cache_key = f"rate_limit:{key}"
+        current = cache.get(cache_key, 0)
+        
+        if current >= limit:
+            return False
+        
+        cache.set(cache_key, current + 1, timeout=period)
+        return True
+    except Exception as e:
+        logger.error(f"Error checking rate limit: {str(e)}")
+        return True  # Permitir en caso de error
 
 
 def get_client_ip(request):
     """Get client IP address from request."""
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
     if x_forwarded_for:
-        ip = x_forwarded_for.split(',')[0]
+        ip = x_forwarded_for.split(',')[0].strip()
     else:
-        ip = request.META.get('REMOTE_ADDR')
+        ip = request.META.get('REMOTE_ADDR', '0.0.0.0')
     return ip
 
 
@@ -120,9 +150,6 @@ class SecurityLogger:
     @staticmethod
     def log_login_attempt(email, ip_address, success, user_agent=''):
         """Log login attempt."""
-        import logging
-        logger = logging.getLogger('security')
-        
         log_data = {
             'event': 'login_attempt',
             'email': email,
@@ -140,9 +167,6 @@ class SecurityLogger:
     @staticmethod
     def log_password_change(user, ip_address):
         """Log password change."""
-        import logging
-        logger = logging.getLogger('security')
-        
         log_data = {
             'event': 'password_change',
             'user_id': str(user.id),
@@ -156,9 +180,6 @@ class SecurityLogger:
     @staticmethod
     def log_account_lock(user, ip_address, reason):
         """Log account lock."""
-        import logging
-        logger = logging.getLogger('security')
-        
         log_data = {
             'event': 'account_lock',
             'user_id': str(user.id),
