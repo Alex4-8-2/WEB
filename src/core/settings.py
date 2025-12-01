@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
+from django.conf import settings as django_settings
 
 # Cargar variables de entorno
 load_dotenv()

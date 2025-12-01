@@ -1,16 +1,16 @@
 #!/bin/sh
 
-# Esperar a que PostgreSQL esté listo
+# Esperar a que PostgreSQL esté listo usando psycopg2
 echo "Waiting for PostgreSQL..."
-while ! nc -z postgres 5432; do
-  sleep 0.1
+while ! python -c "import psycopg2; psycopg2.connect(dbname='${DB_NAME}', user='${DB_USER}', password='${DB_PASSWORD}', host='postgres')" 2>/dev/null; do
+  sleep 2
 done
 echo "PostgreSQL started"
 
 # Esperar a que Redis esté listo
 echo "Waiting for Redis..."
-while ! nc -z redis 6379; do
-  sleep 0.1
+while ! python -c "import redis; r = redis.Redis(host='redis', port=6379, password='${REDIS_PASSWORD}'); r.ping()" 2>/dev/null; do
+  sleep 2
 done
 echo "Redis started"
 
