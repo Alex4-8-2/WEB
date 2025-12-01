@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # Servicio de base de datos PostgreSQL
+  postgres:
+    image: postgres:15-alpine
+    container_name: login_db
+    environment:
+      POSTGRES_DB: login_db
+      POSTGRES_USER: login_user
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - login_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U login_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Servicio de Redis para rate limiting y blacklist
+  redis:
+    image: redis:7-alpine
+    container_name: login_redis
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - redis_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - login_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Aplicación Django
+  web:
+    build: .
+    container_name: login_web
+    command: gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers=3 --threads=3
+    volumes:
+      - ./src:/app
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    environment:
+      - DATABASE_URL=postgres://login_user:${DB_PASSWORD}@postgres:5432/login_db
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY}
+      - DEBUG=${DEBUG}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - login_network
+    restart: unless-stopped
+
+  # Nginx como reverse proxy
+  nginx:
+    build: ./nginx
+    container_name: login_nginx
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - static_volume:/app/staticfiles
+      - ./nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - web
+    networks:
+      - login_network
+    restart: unless-stopped
+
+# Redes y volúmenes
+networks:
+  login_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  static_volume:
+  media_volume:
